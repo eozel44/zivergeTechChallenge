@@ -1,43 +1,39 @@
 import zio.console.putStrLn
 import zio.process.Command
-import zio._
-import zio.duration._
+import io.circe.Decoder
+import io.circe.generic.semiauto.deriveDecoder
+import io.circe.parser
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 
 object DataService {
 
-
-
-  trait ServiceError extends Exception with Product with Serializable
-  case class ParsingError(m: String) extends ServiceError
   case class Data(event_type: String, data: String, timestamp: Long)
-  def toData(line: String): Data = {
-    import io.circe.Decoder
-    import io.circe.generic.semiauto.deriveDecoder
-    import io.circe.parser
-    implicit val decodeData: Decoder[Data] = deriveDecoder[Data]
-    //ZIO.fromEither(parser.decode[Data](line)).mapError(k=>ParsingError(k.getMessage)).
-    parser.decode[Data](line).getOrElse(Data("0", "0", 0))
-  }
+  implicit val decodeData: Decoder[Data] = deriveDecoder[Data]
 
+  case class WindowState(counts: Map[String, Long], currentWindow: Instant) {
+
+    def addData(data: Data) = {
+      val dataWindow = Instant.ofEpochSecond(data.timestamp).truncatedTo(ChronoUnit.MINUTES)
+      if (dataWindow == currentWindow) {
+        val currentCount = counts.get(data.event_type).getOrElse(0L)
+        WindowState(counts + (data.event_type -> (currentCount + 1L)), dataWindow)
+      } else {
+        WindowState(Map(data.event_type -> 1L), dataWindow)
+      }
+    }
+  }
 
   val myApp = for {
     _ <- Command("/home/eren/blackbox.amd64").linesStream
-      //.tap(x => putStrLn(s"before mapping: $x"))
-      .map(k => toData(k))
-      //.tap(x => putStrLn(s"after mapping: $x"))
-      .filterNot(_.timestamp == 0)
-      .schedule(Schedule.spaced(5.second))
-      .groupByKey(k => k.event_type) {
-        case (word, stream) =>
-          stream
-            //.tap(x => putStrLn("aggStreamBefore " + x))
-            .scan((1, word)) { case (acc, _) => (acc._1 + 1, word) }
-        //.tap(x => putStrLn("aggStreamAfter " + x.toString))
-      }
-
-      .foreach(k => putStrLn(s"${k._2} --- ${k._1}"))
+           //.tap(x => putStrLn(s"before mapping: $x"))
+           .map(line => parser.decode[Data](line))
+           .collect { case Right(value) => value }
+           .scan(WindowState(Map.empty,Instant.now().truncatedTo(ChronoUnit.MINUTES))){
+             case (window,data) => window.addData(data)
+           }
+           .foreach(k => putStrLn(k.toString))
   } yield ()
-
 
   def main(args: Array[String]): Unit = {
 
