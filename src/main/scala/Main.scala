@@ -1,50 +1,38 @@
-import zio.console.putStrLn
-import zio.process.Command
-import zio.stream.ZTransducer
-
-import java.sql.Timestamp
+import io.circe.{Decoder, Encoder}
 import zio._
-
-object Main {
-
-  case class Data(event_type:String,data:String,timestamp:Long)
-  trait ServiceError extends Exception with Product with Serializable
-  case class ParsingError(m: String) extends ServiceError
-
-  def toData(line:String):Data={
-    import io.circe.Decoder
-    import io.circe.generic.semiauto.deriveDecoder
-    import io.circe.parser
-    implicit val decodeData: Decoder[Data] = deriveDecoder[Data]
-    //ZIO.fromEither(parser.decode[Data](line)).mapError(k=>ParsingError(k.getMessage)).
-    parser.decode[Data](line).getOrElse(Data("0","0",0))
-  }
+import zio.console._
+import zio.interop.catz._
+import zio.interop.catz.implicits._
+import org.http4s._
+import org.http4s.dsl.Http4sDsl
+import org.http4s.implicits._
+import org.http4s.server.blaze.BlazeServerBuilder
 
 
-  val myApp = for {
-    _ <- Command("/home/eren/blackbox.amd64").linesStream
-      //.tap(x => putStrLn(s"before mapping: $x"))
-      .map(k=>toData(k))
-      //.tap(x => putStrLn(s"after mapping: $x"))
-      .chunkN(10)
-      .filterNot(_.timestamp==0)
-      .groupByKey(k=>k.event_type) {
-        case (word, stream) =>
-          stream
-            //.tap(x => putStrLn("aggStreamBefore " + x))
-            .scan((1, word)){ case (acc, _) => (acc._1 + 1, word)}
-            //.tap(x => putStrLn("aggStreamAfter " + x.toString))
+object Main extends App {
+   private val dsl = Http4sDsl[Task]
+  import dsl._
+
+   private val dataService = HttpRoutes
+    .of[Task] {
+      case GET -> Root / "hello" => Ok("Hello, Joe")
+    }
+    .orNotFound
+
+  def run(args: List[String]): URIO[ZEnv, ExitCode] =
+    ZIO
+      .runtime[ZEnv]
+      .flatMap { implicit runtime =>
+        BlazeServerBuilder[Task](runtime.platform.executor.asEC)
+          .bindHttp(8080, "localhost")
+          .withHttpApp(dataService)
+          .resource
+          .toManagedZIO
+          .useForever
+          .foldCauseM(
+            err => ZIO.succeed(ExitCode.failure),
+            _ => ZIO.succeed(ExitCode.success)
+          )
       }
-
-      .foreach(k=>putStrLn(s"${k._2} --- ${k._1}"))
-  } yield ()
-
-
-  def main(args: Array[String]): Unit = {
-
-    val runtime = zio.Runtime.default
-    runtime.unsafeRunSync(myApp)
-
-  }
 
 }
